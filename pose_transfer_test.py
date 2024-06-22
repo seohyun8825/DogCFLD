@@ -1,8 +1,8 @@
+# -*- coding: utf-8 -*-
 """
 @author: Yanzuo Lu
 @author: oliveryanzuolu@gmail.com
 """
-
 import argparse
 import copy
 import datetime
@@ -72,7 +72,6 @@ def build_test_loader(cfg):
     )
 
     return test_loader, fid_real_loader, test_data, fid_real_data
-
 def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
          test_data, fid_real_data, global_step, accelerator, metric,
          noise_scheduler, inverse_noise_scheduler, vae, unet):
@@ -92,17 +91,17 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
         batch_time = AverageMeter()
 
         for i, test_batch in enumerate(test_loader):
-            gt_imgs = test_batch["img_gt"]
+            gt_imgs = test_batch["img_tgt"]  # ground truth images
             img_size = test_batch["img_tgt"].shape[2:]
             bsz = gt_imgs.shape[0]
 
             if cfg.TEST.DDIM_INVERSION_STEPS > 0:
                 if cfg.TEST.DDIM_INVERSION_DOWN_BLOCK_GUIDANCE:
                     c, down_block_additional_residuals, up_block_additional_residuals = model({
-                        "img_cond": test_batch["img_cond_from"], "pose_img": test_batch["pose_img_from"]})
+                        "img_cond": test_batch["img_cond"], "pose_img": test_batch["pose_img_src"]})
                 else:
                     c, down_block_additional_residuals, up_block_additional_residuals = model({
-                        "img_cond": test_batch["img_cond_from"], "pose_img": test_batch["pose_img_to"]})
+                        "img_cond": test_batch["img_cond"], "pose_img": test_batch["pose_img_tgt"]})
 
                 noisy_latents = inverse_sample(
                     cfg.TEST.DDIM_INVERSION_STEPS, accelerator, inverse_noise_scheduler, vae, unet,
@@ -111,31 +110,31 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
                     {k: v.to(dtype=weight_dtype) for k, v in up_block_additional_residuals.items()} if cfg.TEST.DDIM_INVERSION_UP_BLOCK_GUIDANCE else None)
             else:
                 c, down_block_additional_residuals, up_block_additional_residuals = model({
-                    "img_cond": test_batch["img_cond_from"], "pose_img": test_batch["pose_img_to"]})
-                noisy_latents = torch.randn((bsz, 4, img_size[0]//8, img_size[1]//8)).to(accelerator.device)
+                    "img_cond": test_batch["img_cond"], "pose_img": test_batch["pose_img_tgt"]})
+                noisy_latents = torch.randn((bsz, 4, img_size[0] // 8, img_size[1] // 8)).to(accelerator.device)
 
             if cfg.TEST.DDIM_INVERSION_STEPS > 0 and cfg.TEST.DDIM_INVERSION_DOWN_BLOCK_GUIDANCE:
                 c, down_block_additional_residuals, up_block_additional_residuals = model({
-                    "img_cond": test_batch["img_cond_from"], "pose_img": test_batch["pose_img_to"]})
+                    "img_cond": test_batch["img_cond"], "pose_img": test_batch["pose_img_tgt"]})
 
             sampling_imgs = sample(
                 cfg, weight_dtype, accelerator, noise_scheduler, vae, unet, noisy_latents,
                 c, down_block_additional_residuals, up_block_additional_residuals)
 
             # log one-batch sampling results for visualization
-            if i == 0:
+            if i % 5 == 0:  # 5개씩 저장
                 src_imgs = test_batch["img_src"] * 0.5 + 0.5
                 tgt_imgs = test_batch["img_tgt"] * 0.5 + 0.5
-                pose_imgs = F.interpolate(test_batch["pose_img_to"][:, :3, :, :],
+                pose_imgs = F.interpolate(test_batch["pose_img_tgt"][:, :3, :, :],
                                           tuple(test_batch["img_src"].shape[2:]),
                                           mode="bicubic", antialias=True)
                 save_img = torch.stack([src_imgs, pose_imgs, tgt_imgs, sampling_imgs])
-                save_img = postprocess_image(save_img, nrow=save_img.shape[0]*2)
-                save_img.save(os.path.join(save_dir, f"inpainting_test_{accelerator.process_index}_{i}.jpg"))
+                save_img = postprocess_image(save_img, nrow=save_img.shape[0] * 2)
+                save_img.save(os.path.join(save_dir, f"inpainting_test_{accelerator.process_index}_{i // 5}.jpg"))
 
             sampling_imgs = F.interpolate(sampling_imgs, tuple(gt_imgs.shape[2:]), mode="bicubic", antialias=True)
             sampling_imgs = sampling_imgs.float() * 255.0
-            sampling_imgs = sampling_imgs.clamp(0, 255).to(dtype=torch.uint8) # can save all images here!!!
+            sampling_imgs = sampling_imgs.clamp(0, 255).to(dtype=torch.uint8)  # can save all images here!!!
             sampling_imgs = sampling_imgs.to(torch.float32) / 255.
 
             pred_out, lpips, psnr, ssim, ssim_256 = metric(gt_imgs, sampling_imgs)
@@ -169,7 +168,7 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
             if (i + 1) % cfg.ACCELERATE.LOG_PERIOD == 0 or i == len(fid_real_loader) - 1:
                 etas = batch_time.avg * (len(fid_real_loader) - 1 - i)
                 logger.info(
-                    f"FidReal ({i+1}/{len(fid_real_loader)})  "
+                    f"FidReal ({i + 1}/{len(fid_real_loader)})  "
                     f"Time {batch_time.val:.4f}({batch_time.avg:.4f})  "
                     f"Eta {datetime.timedelta(seconds=int(etas))}")
 
@@ -201,7 +200,7 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
             covmean, _ = sqrtm(sigma1.dot(sigma2), disp=False)
             if not np.isfinite(covmean).all():
                 msg = ('fid calculation produces singular product; '
-                    'adding %s to diagonal of cov estimates') % 1e-6
+                       'adding %s to diagonal of cov estimates') % 1e-6
                 logger.info(msg)
                 offset = np.eye(sigma1.shape[0]) * 1e-6
                 covmean = sqrtm((sigma1 + offset).dot(sigma2 + offset))
@@ -238,7 +237,6 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
 
         accelerator.wait_for_everyone()
         torch.cuda.empty_cache()
-
 
 def sample(cfg, weight_dtype, accelerator, noise_scheduler, vae, unet, noisy_latents,
            c_new, down_block_additional_residuals, up_block_additional_residuals):

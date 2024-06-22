@@ -21,7 +21,6 @@ img_dir_replace_to = "/home/user/Desktop/CFLD_pl/CFLD/AP-36k-patr1/"
 from pose_utils import (cords_to_map, draw_pose_from_cords, load_pose_cords_from_strings)
 
 logger = logging.getLogger()
-
 class BaseDeepFashion(Dataset):
     def __init__(self, json_file, img_dir, gt_img_size, pose_img_size, cond_img_size, min_scale,
                  log_aspect_ratio, pred_ratio, pred_ratio_var, psz, train=True):
@@ -41,7 +40,6 @@ class BaseDeepFashion(Dataset):
         self.images = {img['id']: img for img in data['images']}
         self.annotations = {anno['image_id']: anno for anno in data['annotations'] if anno['category_id'] == 2}
 
-        # 전체 이미지 ID 목록을 90%와 10%로 분할
         total_images = list(self.annotations.keys())
         split_idx = int(len(total_images) * 0.9)
         random.shuffle(total_images)
@@ -50,7 +48,6 @@ class BaseDeepFashion(Dataset):
 
         self.folder_map = {}
         for img_id, img in self.images.items():
-            # Replace backslashes with forward slashes and fix the path
             folder_path = os.path.dirname(img['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to))
             if folder_path not in self.folder_map:
                 self.folder_map[folder_path] = []
@@ -92,24 +89,20 @@ class BaseDeepFashion(Dataset):
         image_id = image_ids[idx]
         
         if image_id not in self.annotations:
-            #print(f"Annotation for image_id {image_id} not found.")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
         
         image_info = self.images[image_id]
         annotation = self.annotations[image_id]
 
-        # Replace backslashes with forward slashes and fix the path
         img_file_name = image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
         img_path = os.path.join(self.img_dir, img_file_name)
 
         if not os.path.exists(img_path):
-            #print(f"Image path {img_path} does not exist.")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
 
         try:
             img_from = Image.open(img_path).convert('RGB')
         except Exception as e:
-            #print(f"Error opening image {img_path}: {e}")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
 
         bbox = annotation['bbox']
@@ -131,24 +124,20 @@ class BaseDeepFashion(Dataset):
             attempts += 1
 
         if not valid_target_found:
-            #print(f"No valid target image ID found for image_id {image_id} after {attempts} attempts.")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
 
         target_image_info = self.images[target_image_id]
         target_annotation = self.annotations[target_image_id]
 
-        # Replace backslashes with forward slashes and fix the path
         target_file_name = target_image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
         target_img_path = os.path.join(self.img_dir, target_file_name)
 
         if not os.path.exists(target_img_path):
-            #print(f"Target image path {target_img_path} does not exist.")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
 
         try:
             img_to = Image.open(target_img_path).convert('RGB')
         except Exception as e:
-            #print(f"Error opening target image {target_img_path}: {e}")
             return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
 
         target_bbox = target_annotation['bbox']
@@ -167,21 +156,19 @@ class BaseDeepFashion(Dataset):
             "img_tgt": img_tgt,
             "img_cond": img_cond,
             "pose_img_src": pose_img_src,
-            "pose_img_tgt": pose_img_tgt
+            "pose_img_tgt": pose_img_tgt,
+            "img_gt": img_tgt 
         }
         return return_dict
 
     def build_pose_img(self, annotation, img_width, img_height):
         keypoints = np.array(annotation['keypoints']).reshape(-1, 3)
         keypoints = keypoints[:, :2]
-        #print(f"keypoints :{keypoints} ")
-
         keypoints[:, 0] = np.clip(keypoints[:, 0] - annotation['bbox'][0], 0, img_width) * self.pose_img_size[1] / img_width
         keypoints[:, 1] = np.clip(keypoints[:, 1] - annotation['bbox'][1], 0, img_height) * self.pose_img_size[0] / img_height
 
         pose_map = cords_to_map(keypoints, tuple(self.pose_img_size), (img_width, img_height)).transpose(2, 0, 1)
         pose_img = draw_pose_from_cords(keypoints, tuple(self.pose_img_size), (img_width, img_height), self.skeleton, self.colors)
-        #print(f"pose_map.shape: {pose_map.shape}, pose_img.shape: {pose_img.shape}")
 
         pose_map_tensor = torch.tensor(pose_map, dtype=torch.float32)
         pose_img_tensor = torch.tensor(pose_img.transpose(2, 0, 1), dtype=torch.float32)
@@ -303,4 +290,3 @@ psz = 16
 
 dataset = PisTestDeepFashion(json_file, img_dir, gt_img_size, pose_img_size, cond_img_size, min_scale, log_aspect_ratio, pred_ratio, pred_ratio_var, psz)
 sample = dataset[38]
-#visualize_sample(sample)

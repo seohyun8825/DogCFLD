@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 """
 @author: Yanzuo Lu
 @author: oliveryanzuolu@gmail.com
 """
+
 
 import argparse
 import datetime
@@ -11,6 +13,7 @@ import sys
 import time
 import warnings
 
+import shutil
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -269,6 +272,9 @@ def main(cfg):
     start_time = time.time()
     end_time = time.time()
 
+
+
+    # In the main function, replace the following lines inside the epoch loop
     for epoch in range(last_epoch, cfg.OPTIMIZER.EPOCHS, 1):
         model.train()
         unet.train()
@@ -353,11 +359,15 @@ def main(cfg):
                     f"Eta {datetime.timedelta(seconds=int(etas))}")
 
         logger.info(f"epoch {epoch + 1} finished, running time {datetime.timedelta(seconds=int(time.time() - epoch_time))}")
-        save_dir = os.path.join(run_dir, f"epochs_{(epoch+1):03d}")
+
+        # 체크포인트 every 20 epochs
+        if (epoch + 1) % 20 == 0:
+            save_dir = os.path.join(run_dir, "checkpoint")
+            os.makedirs(save_dir, exist_ok=True)
+            accelerator.save_state(os.path.join(save_dir, "checkpoints"))
 
         if (epoch + 1) % cfg.ACCELERATE.EVAL_PERIOD == 0:
-            accelerator.save_state(os.path.join(save_dir, "checkpoints"))
-            save_dir = os.path.join(save_dir, "log_images")
+            save_dir = os.path.join(run_dir, f"epochs_{(epoch+1):03d}")
             os.makedirs(save_dir, exist_ok=True)
 
             eval(
@@ -381,6 +391,7 @@ def main(cfg):
     train_time = time.time() - start_time
     logger.info(f'training completed, running time {datetime.timedelta(seconds=int(train_time))}')
     accelerator.end_training()
+
 
 
 if __name__ == "__main__":
