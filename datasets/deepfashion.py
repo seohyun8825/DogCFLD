@@ -85,81 +85,115 @@ class BaseDeepFashion(Dataset):
         return len(self.train_images) if self.train else len(self.test_images)
 
     def __getitem__(self, idx):
-        image_ids = self.train_images if self.train else self.test_images
-        image_id = image_ids[idx]
-        
-        if image_id not in self.annotations:
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
-        
-        image_info = self.images[image_id]
-        annotation = self.annotations[image_id]
-
-        img_file_name = image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
-        img_path = os.path.join(self.img_dir, img_file_name)
-
-        if not os.path.exists(img_path):
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
-
-        try:
-            img_from = Image.open(img_path).convert('RGB')
-        except Exception as e:
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
-
-        bbox = annotation['bbox']
-        bbox_x, bbox_y, bbox_w, bbox_h = map(int, bbox)
-        img_from = img_from.crop((bbox_x, bbox_y, bbox_x + bbox_w, bbox_y + bbox_h))
-
-        folder_path = os.path.dirname(img_file_name)
-        other_image_ids = [id for id in self.folder_map[folder_path] if id != image_id]
-
-        valid_target_found = False
+        max_attempts = 10  # Set a maximum number of attempts to avoid infinite recursion
         attempts = 0
-        target_image_id = None
-        while other_image_ids and not valid_target_found and attempts < len(other_image_ids):
-            target_image_id = random.choice(other_image_ids)
-            if target_image_id in self.annotations:
-                valid_target_found = True
-            else:
-                other_image_ids.remove(target_image_id)
-            attempts += 1
 
-        if not valid_target_found:
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
+        while attempts < max_attempts:
+            image_ids = self.train_images if self.train else self.test_images
+            image_id = image_ids[idx]
 
-        target_image_info = self.images[target_image_id]
-        target_annotation = self.annotations[target_image_id]
+            if image_id not in self.annotations:
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"Image ID {image_id} not in annotations. Attempt {attempts}/{max_attempts}.")
+                continue
+            
+            image_info = self.images[image_id]
+            annotation = self.annotations[image_id]
 
-        target_file_name = target_image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
-        target_img_path = os.path.join(self.img_dir, target_file_name)
+            img_file_name = image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
+            img_path = os.path.join(self.img_dir, img_file_name)
 
-        if not os.path.exists(target_img_path):
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
+            if not os.path.exists(img_path):
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"Image path {img_path} does not exist. Attempt {attempts}/{max_attempts}.")
+                continue
 
-        try:
-            img_to = Image.open(target_img_path).convert('RGB')
-        except Exception as e:
-            return self.__getitem__((idx + 1) % len(image_ids))  # Try next index
+            try:
+                img_from = Image.open(img_path).convert('RGB')
+            except Exception as e:
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"Error opening image {img_path}. Attempt {attempts}/{max_attempts}. Error: {e}")
+                continue
 
-        target_bbox = target_annotation['bbox']
-        target_bbox_x, target_bbox_y, target_bbox_w, target_bbox_h = map(int, target_bbox)
-        img_to = img_to.crop((target_bbox_x, target_bbox_y, target_bbox_x + target_bbox_w, target_bbox_y + target_bbox_h))
+            bbox = annotation['bbox']
+            bbox_x, bbox_y, bbox_w, bbox_h = map(int, bbox)
+            img_from = img_from.crop((bbox_x, bbox_y, bbox_x + bbox_w, bbox_y + bbox_h))
 
-        img_src = self.transform_gt(img_from)
-        img_tgt = self.transform_gt(img_to)
-        img_cond = self.transform(img_from)
+            folder_path = os.path.dirname(img_file_name)
+            other_image_ids = [id for id in self.folder_map[folder_path] if id != image_id]
 
-        pose_img_src = self.build_pose_img(annotation, bbox_w, bbox_h)
-        pose_img_tgt = self.build_pose_img(target_annotation, target_bbox_w, target_bbox_h)
+            valid_target_found = False
+            target_attempts = 0
+            target_image_id = None
+            while other_image_ids and not valid_target_found and target_attempts < len(other_image_ids):
+                target_image_id = random.choice(other_image_ids)
+                if target_image_id in self.annotations:
+                    valid_target_found = True
+                else:
+                    other_image_ids.remove(target_image_id)
+                target_attempts += 1
 
-        return_dict = {
-            "img_src": img_src,
-            "img_tgt": img_tgt,
-            "img_cond": img_cond,
-            "pose_img_src": pose_img_src,
-            "pose_img_tgt": pose_img_tgt,
-            "img_gt": img_tgt 
-        }
-        return return_dict
+            if not valid_target_found:
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"No valid target image found. Attempt {attempts}/{max_attempts}.")
+                continue
+
+            target_image_info = self.images[target_image_id]
+            target_annotation = self.annotations[target_image_id]
+
+            target_file_name = target_image_info['file_name'].replace("\\", "/").replace(img_dir_replace_from.replace("\\", "/"), img_dir_replace_to)
+            target_img_path = os.path.join(self.img_dir, target_file_name)
+
+            if not os.path.exists(target_img_path):
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"Target image path {target_img_path} does not exist. Attempt {attempts}/{max_attempts}.")
+                continue
+
+            try:
+                img_to = Image.open(target_img_path).convert('RGB')
+            except Exception as e:
+                idx = (idx + 1) % len(image_ids)  # Try next index
+                attempts += 1
+                logger.warning(f"Error opening target image {target_img_path}. Attempt {attempts}/{max_attempts}. Error: {e}")
+                continue
+
+            target_bbox = target_annotation['bbox']
+            target_bbox_x, target_bbox_y, target_bbox_w, target_bbox_h = map(int, target_bbox)
+            img_to = img_to.crop((target_bbox_x, target_bbox_y, target_bbox_x + target_bbox_w, target_bbox_y + target_bbox_h))
+
+            img_src = self.transform_gt(img_from)
+            img_tgt = self.transform_gt(img_to)
+            img_cond = self.transform(img_from)
+
+            pose_img_src = self.build_pose_img(annotation, bbox_w, bbox_h)
+            pose_img_tgt = self.build_pose_img(target_annotation, target_bbox_w, target_bbox_h)
+
+            # Debug
+            #logger.info(f"Successfully retrieved sample {idx} after {attempts + 1} attempts")
+            #logger.info(f"img_src shape: {img_src.shape}")
+            #logger.info(f"img_tgt shape: {img_tgt.shape}")
+            #logger.info(f"img_cond shape: {img_cond.shape}")
+            #logger.info(f"pose_img_src shape: {pose_img_src.shape}")
+            #logger.info(f"pose_img_tgt shape: {pose_img_tgt.shape}")
+
+            return_dict = {
+                "img_src": img_src,
+                "img_tgt": img_tgt,
+                "img_cond": img_cond,
+                "pose_img_src": pose_img_src,
+                "pose_img_tgt": pose_img_tgt,
+                "img_gt": img_tgt 
+            }
+            return return_dict
+
+        # If we reach here, it means we exceeded the maximum attempts
+        logger.error(f"Could not find valid data after {max_attempts} attempts for index {idx}")
+        raise RuntimeError(f"Could not find valid data after {max_attempts} attempts")
 
     def build_pose_img(self, annotation, img_width, img_height):
         keypoints = np.array(annotation['keypoints']).reshape(-1, 3)
@@ -176,15 +210,6 @@ class BaseDeepFashion(Dataset):
 
         return pose_img
 
-    def get_pred_ratio(self):
-        pred_ratio = []
-        for prm, prv in zip(self.pred_ratio, self.pred_ratio_var):
-            assert prm >= prv
-            pr = random.uniform(prm - prv, prm + prv) if prv > 0 else prm
-            pred_ratio.append(pr)
-        pred_ratio = random.choice(pred_ratio)
-        return pred_ratio
-
 class PisTrainDeepFashion(BaseDeepFashion):
     def __init__(self, json_file, img_dir, gt_img_size, pose_img_size, cond_img_size, min_scale,
                  log_aspect_ratio, pred_ratio, pred_ratio_var, psz):
@@ -196,12 +221,10 @@ class PisTestDeepFashion(BaseDeepFashion):
                  log_aspect_ratio, pred_ratio, pred_ratio_var, psz):
         super().__init__(json_file, img_dir, gt_img_size, pose_img_size, cond_img_size, min_scale,
                          log_aspect_ratio, pred_ratio, pred_ratio_var, psz, train=False)
-
-
-
 class FidRealDeepFashion(Dataset):
     def __init__(self, root_dir, test_img_size):
         super().__init__()
+        self.root_dir = root_dir
         self.img_items = self.process_dir(root_dir)
 
         self.transform_test = transforms.Compose([
@@ -211,9 +234,19 @@ class FidRealDeepFashion(Dataset):
 
     def process_dir(self, root_dir):
         data = []
-        img_paths = glob.glob(os.path.join(root_dir, '*.jpg'))
-        for img_path in img_paths:
-            data.append(img_path)
+        img_patterns = ['**/*.jpg', '**/*.jpeg', '**/*.png', '**/*.bmp']  # Add other extensions if needed
+        for pattern in img_patterns:
+            img_paths = glob.glob(os.path.join(root_dir, pattern), recursive=True)
+            logger.info(f"Pattern: {pattern}, Found: {len(img_paths)} images")
+            for img_path in img_paths:
+                logger.info(f"Found image: {img_path}")
+                data.append(img_path)
+        
+        if not data:
+            logger.error(f"No images found in {root_dir}. Please check the directory path and file extensions.")
+        else:
+            logger.info(f"Total images found: {len(data)}")
+
         return data
 
     def __len__(self):

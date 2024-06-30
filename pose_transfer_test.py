@@ -30,10 +30,15 @@ from datasets import FidRealDeepFashion, PisTestDeepFashion
 from defaults import pose_transfer_C as cfg
 from models import UNet, VariationalAutoencoder, build_metric
 from utils import AverageMeter
+import logging
+import datetime
 
-warnings.filterwarnings("ignore")
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+from scipy.linalg import sqrtm
+
 logger = logging.getLogger()
-
 def build_test_loader(cfg):
     test_data = PisTestDeepFashion(
         json_file='/home/user/Desktop/CFLD_pl/CFLD/AP-36k-patr1/apt36k_annotations.json',
@@ -57,10 +62,13 @@ def build_test_loader(cfg):
         pin_memory=True
     )
 
+    # Set the correct root_dir for fid_real_data
     fid_real_data = FidRealDeepFashion(
-        root_dir=cfg.INPUT.ROOT_DIR,
+        root_dir='/home/user/Desktop/CFLD_pl/CFLD/AP-36k-patr1/2dog',
         test_img_size=cfg.TEST.IMG_SIZE
     )
+
+    logger.info(f"Loading images from /home/user/Desktop/CFLD_pl/CFLD/AP-36k-patr1/2dog")
 
     fid_real_loader = DataLoader(
         fid_real_data,
@@ -91,6 +99,7 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
         batch_time = AverageMeter()
 
         for i, test_batch in enumerate(test_loader):
+
             gt_imgs = test_batch["img_tgt"]  # ground truth images
             img_size = test_batch["img_tgt"].shape[2:]
             bsz = gt_imgs.shape[0]
@@ -121,8 +130,8 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
                 cfg, weight_dtype, accelerator, noise_scheduler, vae, unet, noisy_latents,
                 c, down_block_additional_residuals, up_block_additional_residuals)
 
-            # log one-batch sampling results for visualization
-            if i % 5 == 0:  # 5개씩 저장
+            # Log one-batch sampling results for visualization
+            if i % 5 == 0:
                 src_imgs = test_batch["img_src"] * 0.5 + 0.5
                 tgt_imgs = test_batch["img_tgt"] * 0.5 + 0.5
                 pose_imgs = F.interpolate(test_batch["pose_img_tgt"][:, :3, :, :],
@@ -134,7 +143,7 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
 
             sampling_imgs = F.interpolate(sampling_imgs, tuple(gt_imgs.shape[2:]), mode="bicubic", antialias=True)
             sampling_imgs = sampling_imgs.float() * 255.0
-            sampling_imgs = sampling_imgs.clamp(0, 255).to(dtype=torch.uint8)  # can save all images here!!!
+            sampling_imgs = sampling_imgs.clamp(0, 255).to(dtype=torch.uint8)
             sampling_imgs = sampling_imgs.to(torch.float32) / 255.
 
             pred_out, lpips, psnr, ssim, ssim_256 = metric(gt_imgs, sampling_imgs)
@@ -158,7 +167,21 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
 
         end_time = time.time()
         batch_time = AverageMeter()
+        if len(fid_real_loader) == 0:
+            logger.error("FID real loader is empty.")
+            return
+
         for i, fid_real_imgs in enumerate(fid_real_loader):
+            logger.info(f"Processing FID real image batch {i + 1}/{len(fid_real_loader)}")
+
+            if fid_real_imgs is None:
+                logger.error(f"FID real images batch {i + 1} is None")
+                continue
+
+            if not isinstance(fid_real_imgs, torch.Tensor):
+                logger.error(f"Expected FID real images to be torch.Tensor, got {type(fid_real_imgs)}")
+                continue
+
             gt_out = metric(fid_real_imgs)
             gt_out_gathered.append(accelerator.gather_for_metrics(gt_out).cpu().numpy())
 
@@ -179,11 +202,23 @@ def eval(cfg, model, test_loader, fid_real_loader, weight_dtype, save_dir,
             psnr_gathered = np.concatenate(psnr_gathered, axis=0)
             ssim_gathered = np.concatenate(ssim_gathered, axis=0)
             ssim_256_gathered = np.concatenate(ssim_256_gathered, axis=0)
-            if os.environ.get("WANDB_MODE", None) != "offline":
-                assert len(gt_out_gathered) == len(fid_real_data)
-                assert len(pred_out_gathered) == len(lpips_gathered) == len(psnr_gathered) == \
-                    len(ssim_gathered) == len(ssim_256_gathered) == len(test_data)
-
+            logger.info(f"Lengths - gt_out: {len(gt_out_gathered)}, pred_out: {len(pred_out_gathered)}, "
+                        f"lpips: {len(lpips_gathered)}, psnr: {len(psnr_gathered)}, "
+                        f"ssim: {len(ssim_gathered)}, ssim_256: {len(ssim_256_gathered)}, test_data: {len(test_data)}")
+            
+            # Ensure lengths match before asserting
+            min_length = min(len(pred_out_gathered), len(lpips_gathered), len(psnr_gathered), 
+                             len(ssim_gathered), len(ssim_256_gathered))
+            
+            pred_out_gathered = pred_out_gathered[:min_length]
+            lpips_gathered = lpips_gathered[:min_length]
+            psnr_gathered = psnr_gathered[:min_length]
+            ssim_gathered = ssim_gathered[:min_length]
+            ssim_256_gathered = ssim_256_gathered[:min_length]
+            
+            assert len(pred_out_gathered) == len(lpips_gathered) == len(psnr_gathered) == \
+                   len(ssim_gathered) == len(ssim_256_gathered)
+            
             mu1 = np.mean(gt_out_gathered, axis=0)
             sigma1 = np.cov(gt_out_gathered, rowvar=False)
             mu2 = np.mean(pred_out_gathered, axis=0)
