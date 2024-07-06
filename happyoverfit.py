@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-@author: Yanzuo Lu
-@author: oliveryanzuolu@gmail.com
-"""
 
 
 import argparse
